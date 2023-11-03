@@ -42,6 +42,9 @@ Julia Bullard
 * numpy
 * keras
 * matplotlib
+* tqdm
+* os
+* wandb
 
 
 ## Code Structure
