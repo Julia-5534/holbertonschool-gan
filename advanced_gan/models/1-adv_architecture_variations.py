@@ -1,98 +1,124 @@
+#!/usr/bin/env python3
+"""Experient 1: Deep Convolutional
+Generative Adversarial Model (DCGAN)"""
+
 import numpy as np
 import matplotlib.pyplot as plt
-from keras.layers import Dense, Dropout, Flatten
-from keras.layers import Input, LeakyReLU, Reshape
-from keras.models import Model, Sequential
+from keras.datasets import mnist
+from keras.layers import Input, LeakyReLU, Reshape, ReLU
+from keras.layers import Activation, Dense, Flatten, BatchNormalization
+from keras.models import Sequential
 from keras.optimizers import Adam
 from tqdm import tqdm_notebook
-from data.adv_preprocess import load_cartoon_set
+from data.preprocess import load_data
+from keras.layers import Conv2D, Conv2DTranspose
+import os
 import wandb
 
-X = load_cartoon_set()
+# Load the dataset
+X = load_data()
 
 # Initialize a new wandb run
-wandb.init(project="exp1-adv-gan-cartoon")
+wandb.init(project="ADV_DCGAN", name="exp1-adv-dcgan")
 
-# Adjust the discriminator
 def discriminator():
-    input = Input(shape=(64, 64, 3))  # Adjust for size and color channels of Cartoon Set
-    
-    x = Flatten()(input)
-    x = Dropout(0.4)(x)
-    x = Dense(1024, activation=LeakyReLU(alpha=0.2))(x)
-    x = Dropout(0.4)(x)
-    x = Dense(512, activation=LeakyReLU(alpha=0.2))(x)
-    x = Dropout(0.4)(x)
-    x = Dense(512, activation=LeakyReLU(alpha=0.2))(x)
+    model = Sequential()
+    model.add(Input(shape=(28, 28, 1)))
+    model.add(Conv2D(64, (3, 3), strides=(2, 2), padding='same'))
+    model.add(LeakyReLU(alpha=0.2))
+    # model.add(Dropout(0.4))
+    model.add(Conv2D(128, (3, 3), strides=(2, 2), padding='same'))
+    model.add(LeakyReLU(alpha=0.2))
+    # model.add(Dropout(0.4))
+    model.add(Flatten())
+    model.add(Dense(1, activation='sigmoid'))
 
-    output = Dense(1, activation='sigmoid')(x)  # Output is a single value
+    model.compile(optimizer=Adam(lr=0.0001, beta_1=0.5), loss='binary_crossentropy')
 
-    model = Model(input, output)
+    return model
+
+def generator(n):
+    model = Sequential()
+    model.add(Dense(7*7*128, input_dim=n))
+    model.add(BatchNormalization())
+    model.add(ReLU())
+    model.add(Reshape((7, 7, 128)))
+    model.add(Conv2DTranspose(128, (4, 4), strides=(2, 2), padding='same'))
+    model.add(BatchNormalization())
+    model.add(ReLU())
+    model.add(Conv2DTranspose(1, (4, 4), strides=(2, 2), padding='same'))
+    model.add(Activation('tanh'))
+
+    return model
+
+def gan(dis, gen):
+    dis.trainable = False
+
+    model = Sequential()
+    model.add(gen)
+    model.add(dis)
+
     model.compile(optimizer=Adam(lr=0.0002, beta_1=0.5), loss='binary_crossentropy')
 
     return model
 
-
-# Adjust the generator
-def generator(n):
-    input = Input(shape=(n))
-
-    x = Dense(256, activation=LeakyReLU(alpha=0.2))(input)
-    x = Dense(512, activation=LeakyReLU(alpha=0.2))(x)
-    x = Dense(1024, activation=LeakyReLU(alpha=0.2))(x)
-    x = Dense(64*64*3, activation='tanh')(x)  # Adjust for size and color channels of Cartoon Set
-    output = Reshape((64, 64, 3))(x)  # Adjust for size and color channels of Cartoon Set
-    return Model(input, output)
-
-
-def gan(dis, gen):
-  dis.trainable = False
-
-  model = Sequential()
-
-  model.add(gen)
-  model.add(dis)
-
-  model.compile(optimizer=Adam(lr=0.0002, beta_1=0.5), loss='binary_crossentropy')
-
-  return model
+# Create the logs/baseline directory if it doesn't exist
+if not os.path.exists('logs/exp1-adv-dcgan'):
+    os.makedirs('logs/exp1-adv-dcgan')
 
 discrim = discriminator()
-
 geney = generator(100)
-
 gan_model = gan(discrim, geney)
 
-# Adjust hyperparameters
-epochs = 200  # Increase number of epochs
-batch_size = 512  # Increase batch size
+epochs = 50
+batch_size = 128
 half_batch = batch_size // 2
 n = 100
 
 for i in range(epochs):
     print("EPOCH", i)
     for j in tqdm_notebook(range(len(X) // batch_size)):
-        x_real, y_real = X[np.random.randint(0, len(X), half_batch)].reshape(half_batch, 64, 64, 3), np.ones(half_batch).reshape(half_batch, 1)
-        x_fake, y_fake = geney.predict(np.random.randn(half_batch, n)), np.zeros(half_batch).reshape(half_batch, 1)
-        x_final, y_final = np.vstack((x_real, x_fake)), np.vstack((y_real, y_fake))
-        dis_loss = discrim.train_on_batch(x_final, y_final)
-        gen_loss = gan_model.train_on_batch(np.random.randn(batch_size, n), np.ones(batch_size).reshape(batch_size, 1))
+        # Generate random noise
+        noise = np.random.normal(0, 1, [half_batch, n])
 
-        # Log losses to wandb
-        wandb.log({"Discriminator Loss": dis_loss,
-                   "Generator Loss": gen_loss})
+        # Generate fake images
+        x_fake = geney.predict(noise)
 
-    print("Discriminator Loss:", dis_loss)
-    print("Generator Loss:", gen_loss)
+        # Use soft labels for training the discriminator
+        y_real_soft = np.random.uniform(0.9, 1.0, size=(half_batch,))
+        y_fake_soft = np.random.uniform(0.0, 0.1, size=(half_batch))
 
-    if i % 10 == 0:
-        fig, axes = plt.subplots(5, 5, figsize=(12, 12))
-        images = []
-        for ii in range(5):
-            for jj in range(5):
-                img = geney.predict(np.random.randn(1 * n).reshape(1, n)).reshape(64, 64)  # Adjust for size of Cartoon Set
-                axes[ii, jj].imshow(img)
-                images.append(wandb.Image(img))  # Log image to W&B
-        plt.show()
-        plt.close()
-        wandb.log({"Generated Images": images})  # Log all images to W&B
+        # Train discriminator on real and fake data separately
+        x_real = X[np.random.randint(0, len(X), half_batch)].reshape(half_batch, 28, 28, 1)
+        d_loss_real = discrim.train_on_batch(x_real + np.random.normal(loc=0.0,scale=0.05,size=x_real.shape), y_real_soft)
+        d_loss_fake = discrim.train_on_batch(x_fake + np.random.normal(loc=0.0,scale=0.05,size=x_fake.shape), y_fake_soft)
+
+        # Calculate the total discriminator loss
+        d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+        # Generate new noise for the generator
+        noise = np.random.normal(0, 1, [batch_size, n])
+        valid_y = np.array([1] * batch_size)
+
+        # Train the generator within the GAN model
+        g_loss = gan_model.train_on_batch(noise + np.random.normal(loc=0.0,scale=0.05,size=noise.shape), valid_y)
+
+    print("Discriminator Loss:", d_loss)
+    print("Generator Loss:", g_loss)
+    
+    # Log the losses to wandb
+    wandb.log({"Discriminator Loss": d_loss, "Generator Loss": g_loss})
+
+    fig, axes = plt.subplots(5, 5)
+    images = []
+    for ii in range(5):
+        for jj in range(5):
+            img = geney.predict(np.random.randn(1, n)).reshape(28, 28)
+            axes[ii, jj].imshow(img, cmap='gray')
+            images.append(wandb.Image(img))
+    save_path = os.path.join('logs', 'exp1-adv-dcgan', f'image_at_epoch_{i:04d}.png')
+    plt.show()
+    plt.close()
+    wandb.log({"ADV EXP1 Generated Images": images})
+
+wandb.finish()
